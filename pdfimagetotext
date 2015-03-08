@@ -1,0 +1,127 @@
+#!/bin/bash
+
+# Configuration:
+# How many DPI image we create when converting the PDF to Image 
+# (leave it to 300 dpi unless you KNOW you have higher-dpi images in the PDF)
+DPI=300
+
+# Language of the PDF (3 letter code)
+# eng fra deu ... (see tesseract supported languages)
+LNG=deu
+
+# How many jobs do we launch in parallel ?
+# Advice: set it to as many CPU/Cores you have 
+PARALLEL=4
+
+# TMPDIR must have 10 times the biggest PDF size of free space.
+TMPDIR=/tmp
+
+#--------------------------------------------------------------------------------
+
+# VERBOSE ?
+if [ "$1" = "-v" ]
+then
+	SILENT=false
+	VERBOSE="-v" 
+	shift
+else
+	SILENT=true
+	VERBOSE=""
+fi
+
+# SLAVE parallel mode
+if [ "$1" = "-s" ]
+then
+	SLAVE=true
+	shift
+else
+	SLAVE=false
+fi
+
+# PDF
+if [ ! -r "$1" ]
+then
+    echo "FATAL: can't read input file $1"
+    exit 1
+fi
+
+PDF="$1"
+
+# TXT
+if [ -z "$2" ]
+then 
+    TXT="$(echo $PDF | sed -e 's/.pdf$/.txt/i')"
+    if [ "$TXT" = "$PDF" ]
+	then
+	$SILENT || echo "Strange: your pdf file does not end with .pdf, text file will have .txt at the end instead" >&2
+	TXT="${PDF}.txt"
+    fi
+else
+    TXT="$2"
+fi
+if [ "$TXT" = "-" ]
+then
+    TXT=/dev/stdout
+fi
+
+# Get the number of pages of the original PDF : 
+PAGES="$(pdftk "$PDF" dump_data output -|grep NumberOfPages:|awk '{print $2}')"
+if [ -z "$PAGES" -o "$PAGES" -le "0" ]
+then
+    echo "FATAL: this PDF has no page, or can't be opened properly"
+    exit 2
+fi
+
+# SLAVE mode (process one page, exit.)
+if $SLAVE
+then
+    PAGENUM="$3"
+    TMPDIR="$TMPDIR/pdfimagetotext.$$"
+    mkdir "$TMPDIR"
+
+    # Process page:
+    $SILENT || echo "page $PAGENUM convert" >&2
+    convert -density "$DPI" -trim "${PDF}[$PAGENUM]" -sharpen 0x1.0 "$TMPDIR/tmp.png"
+    $SILENT || echo "page $PAGENUM scantailor" >&2
+    scantailor-cli -l=1 --content-detection=cautious --dpi=$DPI --output-dpi=$(($DPI + 100)) --start-filter=1 --end-filter=6 "$TMPDIR/tmp.png" "$TMPDIR"
+    rm "$TMPDIR/tmp.png"
+    $SILENT || echo "page $PAGENUM OCR" >&2
+    tesseract "$TMPDIR/tmp.tif" "$TMPDIR/tmp" -l $LANGUAGE
+    mv "$TMPDIR/tmp.txt" "$TXT"
+    rm -rf "$TMPDIR"
+    $SILENT || echo "page $page ENDED" >&2 
+else
+# MASTER / MAIN mode : 
+# launch $PARALLEL slave at the same time, 
+
+    # Prepare a TMP drive:
+    TMPDIR="$TMPDIR/pdfimagetotext.$$"
+    mkdir "$TMPDIR"
+    
+    # parallel processing
+    for page in $(seq -w 0 $(($PAGES - 1)) )
+    do
+	RUNNING="`jobs -p |wc -l`"
+	while [ "$RUNNING" -ge "$PARALLEL" ]
+	do
+	    sleep 2
+	    RUNNING="`jobs -p |wc -l`"
+	done
+        # launch myself with -s (slave) option, asking for only ONE page
+	$SILENT || echo "page $page / $PAGES START" >&2 
+	$0 $VERBOSE -s "$PDF" "$TMPDIR/page_${page}.txt" "$page" &
+    done
+    $SILENT || echo "Waiting for last process to finish..." >&2
+    while [ "$RUNNING" -gt "1" ]
+    do
+        sleep 2
+	$SILENT || echo "still $RUNNING processes..." >&2
+        RUNNING="`jobs -p |wc -l`"
+    done
+    sleep 2
+    $SILENT || echo "Finished, creating text file" >&2
+    cat $(ls "$TMPDIR/"page_*.txt | sort) >"$TXT"
+    rm -rf "$TMPDIR"
+fi
+
+
