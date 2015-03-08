@@ -44,7 +44,6 @@ then
     echo "FATAL: can't read input file $1"
     exit 1
 fi
-
 PDF="$1"
 
 # TXT
@@ -89,7 +88,7 @@ then
     tesseract "$TMPDIR/tmp.tif" "$TMPDIR/tmp" -l $LANGUAGE
     mv "$TMPDIR/tmp.txt" "$TXT"
     rm -rf "$TMPDIR"
-    $SILENT || echo "page $page ENDED" >&2 
+    $SILENT || echo "page $PAGENUM ENDED" >&2 
 else
 # MASTER / MAIN mode : 
 # launch $PARALLEL slave at the same time, 
@@ -112,10 +111,11 @@ else
 	$0 $VERBOSE -s "$PDF" "$TMPDIR/page_${page}.txt" "$page" &
     done
     $SILENT || echo "Waiting for last process to finish..." >&2
-    while [ "$RUNNING" -gt "1" ]
+    while [ "$RUNNING" -gt "0" ]
     do
         sleep 2
 	$SILENT || echo "still $RUNNING processes..." >&2
+	jobs >/dev/null
         RUNNING="`jobs -p |wc -l`"
     done
     sleep 2
